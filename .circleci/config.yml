@@ -1,0 +1,24 @@
+version: 2
+jobs:
+  shellcheck:
+    docker:
+      - image: ledup/circleci-bash:latest
+    steps:
+      - checkout
+      - run:
+          name: Inspect code with shellcheck
+          command: find . -type f -name '*.sh' | xargs shellcheck
+  shfmt:
+    docker:
+      - image: ledup/circleci-bash:latest
+    steps:
+      - checkout 
+      - run:
+          name: Check style with shfmt
+          command: find . -type f -name '*.sh' | xargs shfmt -i 2 -ci -d
+workflows:
+  version: 2
+  build:
+    jobs:
+      - shellcheck
+      - shfmt
