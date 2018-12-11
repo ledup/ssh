@@ -101,6 +101,7 @@ ssh_in() {
   done
 
   if [ -z "$server" ]; then
+    fallback_deprecated_ssh "$user" "$server" "$@"
     help ssh
     exit
   fi
@@ -121,9 +122,28 @@ ssh_in() {
     fi
     command ssh "${ssh_remote}" -F "${SSH_PLUGIN_CACHE_CONFIG}"
   else
+    fallback_deprecated_ssh "$user" "$server" "$@"
     echo "Can't find server named $server"
     exit 1
   fi
+}
+
+# If ssh command is known as deprecated yet, fallback to docker exec
+fallback_deprecated_ssh() {
+  if key_in_array "ssh" in DEPRECATED_COMMANDS; then
+
+    echo "Warning: Deprecated command. Please use led in to get console on container or install ssh plugin to connect servers."
+
+    # get command from remaining arguments
+    local user=${1:-"dev"}
+    shift
+    local server=${1:-"apache"}
+    shift
+    local cmd=${*:-$cmd}
+
+    _docker_exec "${user}" "${server}" "${cmd}"
+  fi
+  return 0
 }
 
 # Generate single file with all ssh config files founds
