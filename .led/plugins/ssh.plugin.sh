@@ -11,12 +11,12 @@ SSH_PLUGIN_CACHE_CONFIG=${LED_CACHE_USER_DIR}/sshconfig
 #   in          Open console on server
 #   list        List available servers
 #
-# If no command is provided, the command in is the default one.
+# If no command is provided, the command 'in' is the default one.
 #
 # @autocomplete ssh: in list --user --server
-# @autocomplete ssh --server: [led ssh list | awk '{print $1}']
+# @autocomplete ssh --server: [led ssh list -q]
 # @autocomplete ssh --user: dev root
-# @autocomplete ssh -s: [led ssh list | awk '{print $1}']
+# @autocomplete ssh -s: [led ssh list -q]
 # @autocomplete ssh -u: dev root
 ssh_plugin() {
   local command=$1
@@ -32,26 +32,59 @@ ssh_plugin() {
 # Usage: led ssh list
 #
 # List configured servers with SSH access
+# Options
+#   -q, --quiet   Only list hosts aliases
+#
+# @autocomplete ssh list: --quiet
 ssh_list() {
   ssh_do_cache
 
-  local host
+  local host host_aliases
   local hostname
+  local line
   local host_displayed=()
+  local quiet
+
+  # shellcheck disable=SC2046
+  set -- $(_lib_utils_get_options "q" "quiet" "$@")
+
+  # if quiet mode is enabled, will only print host aliases from ssh config file
+  while [ -n "$#" ]; do
+    case $1 in
+      --quiet | -q)
+        quiet="quiet"
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+    esac
+  done
 
   # tips inspired by http://www.commandlinefu.com/commands/view/13419/extract-shortcuts-and-hostnames-from-.sshconfig
   #
   # we order output only after duplicate host exclusion
   sort < <(
-    while read -r host hostname; do
-      host_in_list=$(
-        echo "${host_displayed[@]}" | tr ' ' '\n' | grep -q "^${host}$"
-        echo "$?"
-      )
-      [ "$host_in_list" -eq 0 ] && continue
-      print_padded "$host" "$hostname"
-      host_displayed+=("$host")
-    done < <(awk 'BEGIN {IGNORECASE = 1} $1=="Host"{$1="";H=substr($0,2)};$1=="HostName"{print H,$2}' "${SSH_PLUGIN_CACHE_CONFIG}"))
+    while read -r line; do
+      # extract left part
+      host_aliases=${line%' $ '*}
+      # extract right part
+      hostname=${line#*' $ '}
+
+      for host in ${host_aliases}; do
+        if in_array "${host}" "${host_displayed[@]}"; then
+          continue
+        fi
+        host_displayed+=("${host}")
+        if [ -n "${quiet}" ]; then
+          echo "${host}"
+        else
+          print_padded "${host}" "${hostname}"
+        fi
+      done
+
+    done < <(awk 'BEGIN {IGNORECASE = 1} $1=="Host"{$1="";H=substr($0,2)};$1=="HostName"{print H,"$",$2}' "${SSH_PLUGIN_CACHE_CONFIG}"))
 }
 
 # in
@@ -64,6 +97,9 @@ ssh_list() {
 #   -s, --server   Server name to use
 #   -u, --user     Override user to use
 #
+# You can define options using configuration keys:
+# default.ssh    myhost
+#
 # @autocomplete ssh in: --user --server
 # @autocomplete ssh in --server: [led ssh list | awk '{print $1}']
 # @autocomplete ssh in --user: dev root
@@ -72,13 +108,15 @@ ssh_list() {
 ssh_in() {
   local user
   local server
-  local valid_ssh_host
   local ssh_remote
+
+  local default_ssh_server
+  default_ssh_server="$(_config_get_value default.ssh)"
 
   # shellcheck disable=SC2046
   set -- $(_lib_utils_get_options "u:s:l" "user:,server:" "$@")
 
-  while [ ! -z "$#" ]; do
+  while [ -n "$#" ]; do
     case $1 in
       -u | --user)
         user=$2
@@ -100,21 +138,23 @@ ssh_in() {
     esac
   done
 
-  if [ -z "$server" ]; then
-    fallback_deprecated_ssh "$user" "$server" "$@"
+  server=${server:-"${default_ssh_server}"}
+
+  if [ -z "${server}" ]; then
+    fallback_deprecated_ssh "${user}" "${server}" "$@"
     help ssh
     exit
   fi
 
   ssh_do_cache
 
+  local ssh_host_aliases
+  # only get host aliases
+  mapfile -t ssh_host_aliases < <(ssh_list --quiet)
+
   # test if the server is a Host entry defined in ssh config file
-  valid_ssh_host=$(
-    grep -i '^Host ' "${SSH_PLUGIN_CACHE_CONFIG}" | sed 's/Host //I' | grep -q "^${server}$"
-    echo $?
-  )
-  # if yes, connect to the remote server
-  if [ "${valid_ssh_host}" -eq 0 ]; then
+  if in_array "${server}" "${ssh_host_aliases[@]}"; then
+    # if yes, connect to the remote server
     if [ -n "${user}" ]; then
       ssh_remote="${user}@${server}"
     else
@@ -122,8 +162,8 @@ ssh_in() {
     fi
     command ssh "${ssh_remote}" -F "${SSH_PLUGIN_CACHE_CONFIG}"
   else
-    fallback_deprecated_ssh "$user" "$server" "$@"
-    echo "Can't find server named $server"
+    echo -e "Can't find server named '${server}'\\n"
+    fallback_deprecated_ssh "${user}" "${server}" "$@"
     exit 1
   fi
 }
@@ -131,8 +171,7 @@ ssh_in() {
 # If ssh command is known as deprecated yet, fallback to docker exec
 fallback_deprecated_ssh() {
   if key_in_array "ssh" in DEPRECATED_COMMANDS; then
-
-    echo "Warning: Deprecated command. Please use led in to get console on container or install ssh plugin to connect servers."
+    echo "Warning: Deprecated command. Please use 'led in' to get console on container or install 'ssh' plugin to connect servers."
 
     # get command from remaining arguments
     local user=${1:-"dev"}
@@ -140,6 +179,7 @@ fallback_deprecated_ssh() {
     local server=${1:-"apache"}
     shift
     local cmd=${*:-$cmd}
+    echo "trying to find a container named '${server}':"
 
     _docker_exec "${user}" "${server}" "${cmd}"
   fi
@@ -148,6 +188,7 @@ fallback_deprecated_ssh() {
 
 # Generate single file with all ssh config files founds
 ssh_do_cache() {
+  local f
   local sshconfig=(.led/sshconfig "${HOME}"/.led/sshconfig "${SCRIPT_DIR}"/etc/sshconfig)
 
   cat /dev/null >"${SSH_PLUGIN_CACHE_CONFIG}"
