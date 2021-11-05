@@ -20,7 +20,8 @@ SSH_PLUGIN_CACHE_CONFIG=${LED_CACHE_USER_DIR}/sshconfig
 # @autocomplete ssh -u: dev root
 ssh_plugin() {
   local command=$1
-
+  ssh_do_cache
+  readonly SSH_PLUGIN_CACHE_CONFIG
   case $command in
     in) ssh_in "$@" ;;
     list) ssh_list "$@" ;;
@@ -37,12 +38,9 @@ ssh_plugin() {
 #
 # @autocomplete ssh list: --quiet
 ssh_list() {
-  ssh_do_cache
 
-  local host host_aliases
   local hostname
   local line
-  local host_displayed=()
   local quiet
 
   # shellcheck disable=SC2046
@@ -62,29 +60,89 @@ ssh_list() {
     esac
   done
 
-  # tips inspired by http://www.commandlinefu.com/commands/view/13419/extract-shortcuts-and-hostnames-from-.sshconfig
+  local hostname host host_aliases port user
+  local str_hostinfo
+  local key value
+
+  local sshconfig_data
+  # generate list of sshconfig of some keywords with their value. One line by 'Host' keyword found
+  # handled keyword: Host, Hostname, Port, User
   #
-  # we order output only after duplicate host exclusion
-  sort < <(
-    while read -r line; do
-      # extract left part
-      host_aliases=${line%' $ '*}
-      # extract right part
-      hostname=${line#*' $ '}
+  # sample output format:
+  # Host=host1 host1_alias | Hostname=foo1.tld | Port=2222 |
+  # Host=host2 | Hostname=foo2.tld | User=jdoe
+  sshconfig_data=$(awk 'BEGIN {IGNORECASE = 1; flag = 1 }
+                 flag {
+                   if ($1 == "Host") { $1=""; H=substr($0,2); data=""; $1="Host" }
+                   if ($1 ~ /^(Host|Hostname|Port|User)$/) {
+                    key=$1; $1=""; value=substr($0,2);
+                    data = data key "=" value " | "
+                   }
+                   config[H]=data
+                 }
+                 /Host /{ flag=1; }
+                 END { for (key in config) { printf "%s\n", config[key] } }' \
+    "${SSH_PLUGIN_CACHE_CONFIG}" | sort)
 
-      for host in ${host_aliases}; do
-        if in_array "${host}" "${host_displayed[@]}"; then
-          continue
-        fi
-        host_displayed+=("${host}")
-        if [ -n "${quiet}" ]; then
-          echo "${host}"
-        else
-          print_padded "${host}" "${hostname}"
-        fi
-      done
+  # raw data, for debugging
+  #echo "${sshconfig_data}"
 
-    done < <(awk 'BEGIN {IGNORECASE = 1} $1=="Host"{$1="";H=substr($0,2)};$1=="HostName"{print H,"$",$2}' "${SSH_PLUGIN_CACHE_CONFIG}"))
+  local duplicated_hosts=()
+  local host_extras
+  while read -r line; do
+    host_aliases=
+    hostname=
+    port=
+    user=
+    while IFS='=' read -r -d '|' key value; do
+      # trim spaces
+      read -r key <<<"$key"
+      read -r value <<<"$value"
+      # escape non-printable character with blackslash
+      value=$(printf "%q" "${value}")
+
+      # search for key in lowercase
+      case ${key,,} in
+        host) host_aliases=$value ;;
+        hostname) hostname=$value ;;
+        port) port=$value ;;
+        user) user=$value ;;
+      esac
+    done <<<"${line}"
+
+    for host in ${host_aliases}; do
+      host_extras=()
+      ## check host alias
+      # A host alias from a Host line with many aliases has a blackslash at the end
+      [[ "${host: -1}" == "\\" ]] && host=${host::-1}
+
+      if ! [[ $host =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        # skip host with other characters (like wildcard)
+        continue
+      fi
+
+      if in_array "${host}" "${host_displayed[@]}"; then
+        duplicated_hosts+=("$host")
+        continue
+      fi
+
+      host_displayed+=("${host}")
+      if [ -n "${quiet}" ]; then
+        echo "${host}"
+      else
+        [[ -n "${port}" ]] && host_extras+=("port: $port")
+        [[ -n "${user}" ]] && host_extras+=("user: $user")
+        str_hostinfo="${hostname}"
+        [[ ${#host_extras[*]} -ge 1 ]] && str_hostinfo+=" [${host_extras[*]}]"
+        print_padded "${host}" "${str_hostinfo}"
+      fi
+    done
+
+  done <<<"${sshconfig_data}"
+
+  if [[ ${#duplicated_hosts[*]} -ge 1 && -z "${quiet}" ]]; then
+    echo -e >&2 "\\n[SKIPPED] Host(s) in '${duplicated_hosts[*]}' duplicated! Please check your sshconfig files"
+  fi
 }
 
 # in
@@ -101,9 +159,9 @@ ssh_list() {
 # default.ssh    myhost
 #
 # @autocomplete ssh in: --user --server
-# @autocomplete ssh in --server: [led ssh list | awk '{print $1}']
+# @autocomplete ssh in --server: [led ssh list -q]
 # @autocomplete ssh in --user: dev root
-# @autocomplete ssh in -s: [led ssh list | awk '{print $1}']
+# @autocomplete ssh in -s: [led ssh list -q]
 # @autocomplete ssh in -u: dev root
 ssh_in() {
   local user
@@ -131,7 +189,7 @@ ssh_in() {
         break
         ;;
       -*)
-        echo "bad option:$1"
+        echo "bad option: $1"
         shift
         break
         ;;
@@ -146,7 +204,10 @@ ssh_in() {
     exit
   fi
 
-  ssh_do_cache
+  local ssh_version
+  ssh_version=$(command ssh -V 2>&1)
+  # only keep OpenSSH version
+  ssh_version=${ssh_version%,*}
 
   local ssh_host_aliases
   # only get host aliases
@@ -160,6 +221,7 @@ ssh_in() {
     else
       ssh_remote="${server}"
     fi
+    echo "[SSH client '${ssh_version}']"
     command ssh "${ssh_remote}" -F "${SSH_PLUGIN_CACHE_CONFIG}"
   else
     echo -e "Can't find server named '${server}'\\n"
@@ -189,7 +251,12 @@ fallback_deprecated_ssh() {
 # Generate single file with all ssh config files founds
 ssh_do_cache() {
   local f
-  local sshconfig=(.led/sshconfig "${HOME}"/.led/sshconfig "${SCRIPT_DIR}"/etc/sshconfig)
+
+  local sshconfig=()
+  sshconfig+=(".led/sshconfig")
+  # avoid to read same .led/sshconfig twice
+  [ "${PWD}" != "${HOME}" ] && sshconfig+=("${HOME}/.led/sshconfig")
+  sshconfig+=("${SCRIPT_DIR}/etc/sshconfig")
 
   cat /dev/null >"${SSH_PLUGIN_CACHE_CONFIG}"
   for f in "${sshconfig[@]}"; do
@@ -197,4 +264,10 @@ ssh_do_cache() {
   done
 
   return 0
+}
+
+ssh_get_sshconfig() {
+  if [[ -f "${SSH_PLUGIN_CACHE_CONFIG}" ]]; then
+    echo "${SSH_PLUGIN_CACHE_CONFIG}"
+  fi
 }
