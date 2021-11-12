@@ -20,6 +20,7 @@ SSH_PLUGIN_CACHE_CONFIG=${LED_CACHE_USER_DIR}/sshconfig
 # @autocomplete ssh -u: dev root
 ssh_plugin() {
   local command=$1
+
   ssh_do_cache
   readonly SSH_PLUGIN_CACHE_CONFIG
   case $command in
@@ -222,7 +223,7 @@ ssh_in() {
       ssh_remote="${server}"
     fi
     echo "[SSH client '${ssh_version}']"
-    command ssh "${ssh_remote}" -F "${SSH_PLUGIN_CACHE_CONFIG}"
+    ssh_exec "${ssh_remote}"
   else
     echo -e "Can't find server named '${server}'\\n"
     fallback_deprecated_ssh "${user}" "${server}" "$@"
@@ -262,8 +263,43 @@ ssh_do_cache() {
   for f in "${sshconfig[@]}"; do
     [ -f "$f" ] && cat "$f" >>"${SSH_PLUGIN_CACHE_CONFIG}"
   done
-
   return 0
+}
+
+#
+# ssh_exec <host> <command>
+# if command is not set, run ssh interactivly
+#
+ssh_exec()
+{
+  local ssh_bin
+  local sshconfig_file
+  sshconfig_file="${SSH_PLUGIN_CACHE_CONFIG}"
+
+  local server=$1
+  local command=$2
+
+  if [[ $# -eq 0 ]]; then
+    echo "server not set"
+    return 1
+  fi
+
+  local ssh_options=()
+  if [[ -f "${sshconfig_file}" ]]; then
+    ssh_options+=(-F "${sshconfig_file}")
+  fi
+  # force prefer ssh key, ensure the remote host is responding
+  ssh_options+=(-o "ConnectTimeout=3" -o "PreferredAuthentications=publickey")
+
+  ssh_bin=$(type -P ssh)
+  if [[ -n "${command}" ]]; then
+    ssh_options+=(-n)
+    echo ":: [host: '${server}'] Executing SSH command '${command}'"
+    ${ssh_bin} ${ssh_options[*]} "${server}" "$command"
+  else
+    echo ":: [host: '${server}'] Interactive connection"
+    ${ssh_bin} ${ssh_options[*]} "${server}"
+  fi
 }
 
 ssh_get_sshconfig() {
