@@ -7,7 +7,7 @@ SSH_PLUGIN_CACHE_CONFIG=${LED_CACHE_USER_DIR}/sshconfig
 # Plugin usage:
 #   led ssh [command] [-h|--help]
 #
-# Commands :
+# Commands:
 #   in          Open console on server
 #   list        List available servers
 #
@@ -44,6 +44,7 @@ ssh_list() {
   local line
   local quiet
 
+
   # shellcheck disable=SC2046
   set -- $(_lib_utils_get_options "q" "quiet" "$@")
 
@@ -60,6 +61,12 @@ ssh_list() {
         ;;
     esac
   done
+
+
+  if [[ ! -s "${SSH_PLUGIN_CACHE_CONFIG}" && -z "${quiet}" ]]; then
+    echo "sshconfig file is empty!" >&2
+    return
+  fi
 
   local hostname host host_aliases port user
   local str_hostinfo
@@ -142,7 +149,7 @@ ssh_list() {
   done <<<"${sshconfig_data}"
 
   if [[ ${#duplicated_hosts[*]} -ge 1 && -z "${quiet}" ]]; then
-    echo -e >&2 "\\n[SKIPPED] Host(s) in '${duplicated_hosts[*]}' duplicated! Please check your sshconfig files"
+    echo -e "\\n[SKIPPED] Host(s) in '${duplicated_hosts[*]}' duplicated! Please check your sshconfig files" >&2
   fi
 }
 
@@ -173,7 +180,7 @@ ssh_in() {
   default_ssh_server="$(_config_get_value default.ssh)"
 
   # shellcheck disable=SC2046
-  set -- $(_lib_utils_get_options "u:s:l" "user:,server:" "$@")
+  set -- $(_lib_utils_get_options "u:s:" "user:,server:" "$@")
 
   while [ -n "$#" ]; do
     case $1 in
@@ -200,9 +207,8 @@ ssh_in() {
   server=${server:-"${default_ssh_server}"}
 
   if [ -z "${server}" ]; then
-    fallback_deprecated_ssh "${user}" "${server}" "$@"
     help ssh
-    exit
+    return 1
   fi
 
   local ssh_version
@@ -226,27 +232,8 @@ ssh_in() {
     ssh_exec "${ssh_remote}"
   else
     echo -e "Can't find server named '${server}'\\n"
-    fallback_deprecated_ssh "${user}" "${server}" "$@"
-    exit 1
+    return 1
   fi
-}
-
-# If ssh command is known as deprecated yet, fallback to docker exec
-fallback_deprecated_ssh() {
-  if key_in_array "ssh" in DEPRECATED_COMMANDS; then
-    echo "Warning: Deprecated command. Please use 'led in' to get console on container or install 'ssh' plugin to connect servers."
-
-    # get command from remaining arguments
-    local user=${1:-"dev"}
-    shift
-    local server=${1:-"apache"}
-    shift
-    local cmd=${*:-$cmd}
-    echo "trying to find a container named '${server}':"
-
-    _docker_exec "${user}" "${server}" "${cmd}"
-  fi
-  return 0
 }
 
 # Generate single file with all ssh config files founds
@@ -270,8 +257,7 @@ ssh_do_cache() {
 # ssh_exec <host> <command>
 # if command is not set, run ssh interactivly
 #
-ssh_exec()
-{
+ssh_exec() {
   local ssh_bin
   local sshconfig_file
   sshconfig_file="${SSH_PLUGIN_CACHE_CONFIG}"
@@ -288,8 +274,8 @@ ssh_exec()
   if [[ -f "${sshconfig_file}" ]]; then
     ssh_options+=(-F "${sshconfig_file}")
   fi
-  # force prefer ssh key, ensure the remote host is responding
-  ssh_options+=(-o "ConnectTimeout=3" -o "PreferredAuthentications=publickey")
+
+  ssh_options+=(-o "PreferredAuthentications=publickey")
 
   ssh_bin=$(type -P ssh)
   if [[ -n "${command}" ]]; then
