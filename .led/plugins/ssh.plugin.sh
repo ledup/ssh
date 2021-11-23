@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-SSH_PLUGIN_CACHE_CONFIG=${LED_CACHE_USER_DIR}/sshconfig
+readonly SSHCONFIG_FILE=".led/sshconfig"
 
 # plugin
 
@@ -15,14 +15,10 @@ SSH_PLUGIN_CACHE_CONFIG=${LED_CACHE_USER_DIR}/sshconfig
 #
 # @autocomplete ssh: in list --user --server
 # @autocomplete ssh --server: [led ssh list -q]
-# @autocomplete ssh --user: dev root
 # @autocomplete ssh -s: [led ssh list -q]
-# @autocomplete ssh -u: dev root
 ssh_plugin() {
   local command=$1
 
-  ssh_do_cache
-  readonly SSH_PLUGIN_CACHE_CONFIG
   case $command in
     in) ssh_in "$@" ;;
     list) ssh_list "$@" ;;
@@ -39,11 +35,9 @@ ssh_plugin() {
 #
 # @autocomplete ssh list: --quiet
 ssh_list() {
-
   local hostname
   local line
   local quiet
-
 
   # shellcheck disable=SC2046
   set -- $(_lib_utils_get_options "q" "quiet" "$@")
@@ -62,10 +56,12 @@ ssh_list() {
     esac
   done
 
-
-  if [[ ! -s "${SSH_PLUGIN_CACHE_CONFIG}" && -z "${quiet}" ]]; then
-    echo "sshconfig file is empty!" >&2
-    return
+  if [[ ! -f "${SSHCONFIG_FILE}" ]]; then
+    echo "${SSHCONFIG_FILE} file not found" >&2
+    return 1
+  elif [[ ! -s "${SSHCONFIG_FILE}" && -z "${quiet}" ]]; then
+    echo "${SSHCONFIG_FILE} file is empty!" >&2
+    return 1
   fi
 
   local hostname host host_aliases port user
@@ -90,7 +86,7 @@ ssh_list() {
                  }
                  /Host /{ flag=1; }
                  END { for (key in config) { printf "%s\n", config[key] } }' \
-    "${SSH_PLUGIN_CACHE_CONFIG}" | sort)
+    "${SSHCONFIG_FILE}" | sort)
 
   # raw data, for debugging
   #echo "${sshconfig_data}"
@@ -157,7 +153,7 @@ ssh_list() {
 # Usage: led ssh in [OPTIONS]
 #
 # Connect to servers using SSH.
-# An sshconfig file must exist in the global or local directory .led
+# An .led/sshconfig file must exist in current directory
 #
 # Options
 #   -s, --server   Server name to use
@@ -168,9 +164,7 @@ ssh_list() {
 #
 # @autocomplete ssh in: --user --server
 # @autocomplete ssh in --server: [led ssh list -q]
-# @autocomplete ssh in --user: dev root
 # @autocomplete ssh in -s: [led ssh list -q]
-# @autocomplete ssh in -u: dev root
 ssh_in() {
   local user
   local server
@@ -219,6 +213,10 @@ ssh_in() {
   local ssh_host_aliases
   # only get host aliases
   mapfile -t ssh_host_aliases < <(ssh_list --quiet)
+  if [[ ${#ssh_host_aliases[@]} -eq 0 ]]; then
+    echo "no host alias found"
+    return 1
+  fi
 
   # test if the server is a Host entry defined in ssh config file
   if in_array "${server}" "${ssh_host_aliases[@]}"; then
@@ -236,60 +234,67 @@ ssh_in() {
   fi
 }
 
-# Generate single file with all ssh config files founds
-ssh_do_cache() {
-  local f
-
-  local sshconfig=()
-  sshconfig+=(".led/sshconfig")
-  # avoid to read same .led/sshconfig twice
-  [ "${PWD}" != "${HOME}" ] && sshconfig+=("${HOME}/.led/sshconfig")
-  sshconfig+=("${SCRIPT_DIR}/etc/sshconfig")
-
-  cat /dev/null >"${SSH_PLUGIN_CACHE_CONFIG}"
-  for f in "${sshconfig[@]}"; do
-    [ -f "$f" ] && cat "$f" >>"${SSH_PLUGIN_CACHE_CONFIG}"
-  done
-  return 0
-}
-
 #
 # ssh_exec <host> <command>
-# if command is not set, run ssh interactivly
+# if command is not set, run SSH interactivly
 #
 ssh_exec() {
   local ssh_bin
-  local sshconfig_file
-  sshconfig_file="${SSH_PLUGIN_CACHE_CONFIG}"
 
   local server=$1
   local command=$2
 
   if [[ $# -eq 0 ]]; then
-    echo "server not set"
+    echo "ssh_exec <server> [<command>]" >&2
     return 1
   fi
 
   local ssh_options=()
-  if [[ -f "${sshconfig_file}" ]]; then
-    ssh_options+=(-F "${sshconfig_file}")
-  fi
+  ssh_add_sshconfig_option ssh_options
 
-  ssh_options+=(-o "PreferredAuthentications=publickey")
+  ssh_options+=(-o"PreferredAuthentications=publickey")
 
   ssh_bin=$(type -P ssh)
   if [[ -n "${command}" ]]; then
     ssh_options+=(-n)
-    echo ":: [host: '${server}'] Executing SSH command '${command}'"
-    ${ssh_bin} ${ssh_options[*]} "${server}" "$command"
+    echo -e ":: [host: '${server}'] Executing SSH command '${command}'" >&2
+    ${ssh_bin} "${ssh_options[@]}" "${server}" -- "${command}"
   else
-    echo ":: [host: '${server}'] Interactive connection"
-    ${ssh_bin} ${ssh_options[*]} "${server}"
+    echo -e ":: [host: '${server}'] Interactive connection" >&2
+    ${ssh_bin} "${ssh_options[@]}" "${server}"
   fi
 }
 
-ssh_get_sshconfig() {
-  if [[ -f "${SSH_PLUGIN_CACHE_CONFIG}" ]]; then
-    echo "${SSH_PLUGIN_CACHE_CONFIG}"
+# Simple wrapper to scp which handle .led/sshconfig file by default
+#
+# ssh_scp <source> <target>
+ssh_scp() {
+  local scp_bin
+
+  if [[ $# -lt 2 ]]; then
+    echo "ssh_scp <source> <target>" >&2
+    return 1
+  fi
+
+  local scp_options=()
+  ssh_add_sshconfig_option scp_options
+  scp_options+=(-o"PreferredAuthentications=publickey")
+
+  scp_bin=$(type -P scp)
+  echo -e ":: [host: '${server}'] Executing SCP command '$*'" >&2
+  ${scp_bin} "${scp_options[@]}" "$@"
+}
+
+# add ssh/scp option to a defined array if sshconfig file exists
+#
+# example:
+# ssh_add_sshconfig_option array_name
+# ssh "${array_name[@]}" ...
+# scp "${array_name[@]}" ...
+ssh_add_sshconfig_option() {
+  local ssh_opt
+  declare -n ssh_opt=$1
+  if [[ -f "${SSHCONFIG_FILE}" ]]; then
+    ssh_opt+=(-F "${SSHCONFIG_FILE}")
   fi
 }
