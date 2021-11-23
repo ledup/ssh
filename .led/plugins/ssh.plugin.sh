@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-readonly SSHCONFIG_FILE=".led/sshconfig"
+# not ready for current led version
+#readonly SSHCONFIG_FILE=".led/sshconfig"
+SSHCONFIG_FILE=".led/sshconfig"
 
 # plugin
 
