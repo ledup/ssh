@@ -59,10 +59,10 @@ ssh_list() {
   done
 
   if [[ ! -f "${SSHCONFIG_FILE}" ]]; then
-    echo "${SSHCONFIG_FILE} file not found" >&2
+     [[ -z "${quiet}" ]] && echo "${SSHCONFIG_FILE} file not found" >&2
     return 1
-  elif [[ ! -s "${SSHCONFIG_FILE}" && -z "${quiet}" ]]; then
-    echo "${SSHCONFIG_FILE} file is empty!" >&2
+  elif [[ ! -s "${SSHCONFIG_FILE}" ]]; then
+    [[  -z "${quiet}" ]] && echo "${SSHCONFIG_FILE} file is empty!" >&2
     return 1
   fi
 
