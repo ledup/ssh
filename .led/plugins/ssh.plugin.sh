@@ -283,7 +283,7 @@ ssh_scp() {
   scp_options+=(-o"PreferredAuthentications=publickey")
 
   scp_bin=$(type -P scp)
-  echo -e ":: [host: '${server}'] Executing SCP command '$*'" >&2
+  echo -e ":: Executing SCP command '$*'" >&2
   ${scp_bin} "${scp_options[@]}" "$@"
 }
 
